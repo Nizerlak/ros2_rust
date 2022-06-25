@@ -13,6 +13,9 @@ use parking_lot::Mutex;
 
 use rosidl_runtime_rs::{Message, RmwMessage};
 
+mod loaned_pub_message;
+pub use loaned_pub_message::*;
+
 // SAFETY: The functions accessing this type, including drop(), shouldn't care about the thread
 // they are running in. Therefore, this type can be safely sent to another thread.
 unsafe impl Send for rcl_publisher_t {}
@@ -33,6 +36,7 @@ where
 {
     rcl_publisher_mtx: Mutex<rcl_publisher_t>,
     rcl_node_mtx: Arc<Mutex<rcl_node_t>>,
+    type_support_ptr: *const rosidl_message_type_support_t,
     message: PhantomData<T>,
 }
 
@@ -64,7 +68,7 @@ where
     {
         // SAFETY: Getting a zero-initialized value is always safe.
         let mut rcl_publisher = unsafe { rcl_get_zero_initialized_publisher() };
-        let type_support =
+        let type_support_ptr =
             <T as Message>::RmwMsg::get_type_support() as *const rosidl_message_type_support_t;
         let topic_c_string = CString::new(topic).map_err(|err| RclrsError::StringContainsNul {
             err,
@@ -84,7 +88,7 @@ where
             rcl_publisher_init(
                 &mut rcl_publisher,
                 rcl_node,
-                type_support,
+                type_support_ptr,
                 topic_c_string.as_ptr(),
                 &publisher_options,
             )
@@ -94,6 +98,7 @@ where
         Ok(Self {
             rcl_publisher_mtx: Mutex::new(rcl_publisher),
             rcl_node_mtx: Arc::clone(&node.rcl_node_mtx),
+            type_support_ptr,
             message: PhantomData,
         })
     }
@@ -143,6 +148,27 @@ where
             )
         };
         ret.ok()
+    }
+}
+
+impl<T> Publisher<T>
+where
+    T: RmwMessage,
+{
+    pub fn borrow_loaned_message(&self) -> Result<LoanedMessage<'_, T>, RclrsError> {
+        let mut msg_ptr = std::ptr::null_mut();
+        unsafe {
+            rcl_borrow_loaned_message(
+                &*self.rcl_publisher_mtx.lock(),
+                self.type_support_ptr,
+                &mut msg_ptr,
+            )
+            .ok()?;
+        }
+        Ok(LoanedMessage {
+            publisher: self,
+            msg_ptr: msg_ptr as *mut T,
+        })
     }
 }
 

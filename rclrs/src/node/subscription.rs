@@ -13,6 +13,9 @@ use rosidl_runtime_rs::{Message, RmwMessage};
 
 use parking_lot::{Mutex, MutexGuard};
 
+mod loaned_sub_message;
+pub use loaned_sub_message::*;
+
 // SAFETY: The functions accessing this type, including drop(), shouldn't care about the thread
 // they are running in. Therefore, this type can be safely sent to another thread.
 unsafe impl Send for rcl_subscription_t {}
@@ -178,6 +181,28 @@ where
         };
         ret.ok()?;
         Ok(T::from_rmw_message(rmw_message))
+    }
+}
+
+impl<T> Subscription<T>
+where
+    T: RmwMessage,
+{
+    pub fn take_loaned_message(&self) -> Result<ReadOnlyMessage<'_, T>, RclrsError> {
+        let mut msg_ptr = std::ptr::null_mut();
+        unsafe {
+            rcl_take_loaned_message(
+                &*self.handle.lock(),
+                &mut msg_ptr,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+            .ok()?;
+        }
+        Ok(ReadOnlyMessage {
+            msg_ptr: msg_ptr as *const T,
+            subscription: self,
+        })
     }
 }
 
